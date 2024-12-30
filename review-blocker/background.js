@@ -1,40 +1,72 @@
+const allowedDomains = ["https://www.amazon.com/", "https://www.walmart.com/","https://www.ebay.com/","https://www.target.com/","https://www.costco.com/","https://www.aliexpress.com/","https://www.wish.com/","https://www.bestbuy.com/"];
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.action.setBadgeText({
-      text: "OFF",
+        text: "OFF",
     });
-  });
+    console.log("Extension installed, badge set to OFF.");
+});
 
-const extensions = 'https://developer.chrome.com/docs/extensions';
-const webstore = 'https://developer.chrome.com/docs/webstore';
-const amazon = 'https://www.amazon.com/';
-const walmart = 'https://www.walmart.com/ip';
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log("Message received in background script:", message);
 
+    if (message.type === "toggleCheckbox") {
+        const isEnabled = message.isEnabled;
 
-chrome.action.onClicked.addListener(async (tab) => {
-if (tab.url.startsWith(extensions) || tab.url.startsWith(webstore)) {
-    // Retrieve the action badge to check if the extension is 'ON' or 'OFF'
-    const prevState = await chrome.action.getBadgeText({ tabId: tab.id });
-    // Next state will always be the opposite
-    const nextState = prevState === 'ON' ? 'OFF' : 'ON';
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length === 0) {
+                sendResponse({ status: "error", error: "No active tab available" });
+                return;
+            }
 
-    // Set the action badge to the next state
-    await chrome.action.setBadgeText({
-    tabId: tab.id,
-    text: nextState,
-    });
-    
-    if (nextState === "ON") {
-      // Insert the CSS file when the user turns the extension on
-      await chrome.scripting.insertCSS({
-        files: ["focus-mode.css"],
-        target: { tabId: tab.id },
-      });
-    } else if (nextState === "OFF") {
-      // Remove the CSS file when the user turns the extension off
-      await chrome.scripting.removeCSS({
-        files: ["focus-mode.css"],
-        target: { tabId: tab.id },
-      });
+            const activeTab = tabs[0];
+            const tabUrl = activeTab.url;
+
+            if (!tabUrl || tabUrl.startsWith("chrome://") || tabUrl.startsWith("edge://")) {
+                sendResponse({
+                    status: "error",
+                    error: "Invalid or unsupported tab URL",
+                    tabUrl,
+                });
+                return;
+            }
+
+            const isAllowed = allowedDomains.some((domain) => tabUrl.includes(domain));
+
+            if (isAllowed) {
+                chrome.action.setBadgeText({
+                    tabId: activeTab.id,
+                    text: isEnabled ? "ON" : "OFF",
+                });
+
+                if (isEnabled) {
+                    chrome.scripting
+                        .insertCSS({
+                            files: ["focus-mode.css"],
+                            target: { tabId: activeTab.id },
+                        })
+                        .then(() => sendResponse({ status: "CSS injected", isEnabled }))
+                        .catch((error) => sendResponse({ status: "Error injecting CSS", error }));
+                } else {
+                    chrome.scripting
+                        .removeCSS({
+                            files: ["focus-mode.css"],
+                            target: { tabId: activeTab.id },
+                        })
+                        .then(() => sendResponse({ status: "CSS removed", isEnabled }))
+                        .catch((error) => sendResponse({ status: "Error removing CSS", error }));
+                }
+            } else {
+                sendResponse({
+                    status: "error",
+                    error: "Site not supported",
+                    tabUrl,
+                });
+            }
+        });
+
+        return true; // Ensure sendResponse is valid for asynchronous operations
+    } else {
+        sendResponse({ status: "error", error: "Unknown message type" });
     }
-  }
 });
