@@ -4,11 +4,11 @@
   "version": "1.1",
   "description": "Filters and hides potentially fake reviews on Amazon product pages based on ML analysis.",
   "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["*://*.amazon.com/*", "http://127.0.0.1:5000/"],
+  "host_permissions": ["*://*.amazon.com/*", "https://shreyasb.pythonanywhere.com/"],
   "action": {
     "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icons/icon.png",
+    "default_icon": {      
+      "16": "icons/icon.png", 
       "48": "icons/icon.png",
       "128": "icons/icon.png"
     }

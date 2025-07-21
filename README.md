@@ -18,13 +18,9 @@ If you want to try out any of the features of the extension, please follow these
 
 **6.** Pin the extension  
 
-**7.** Download the backend_files
+**7.** Go to any of the authorized sites, such as Amazon(more sites will be compatible in the future)
 
-**8.** Run the app.py in any IDE of your choice with the .pkl files in the same folder
+**8.** Click on the extension
 
-**9.** Go to any of the authorized sites, such as Amazon, Walmart, Costco, Bestbuy, or Wish(more sites will be compatible in the future)
-
-**10.** Click on the extension
-
-**11.** Toggle the switch, and watch the injected CSS change the page  
+**9.** Toggle the switch, and watch the injected CSS change the page  
 
