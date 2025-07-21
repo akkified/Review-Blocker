@@ -1,256 +1,137 @@
-// content.js
-console.log("Amazon Review Filter content script loaded.");
+// content.js - This script runs in the context of the webpage
 
-const FLASK_ENDPOINT = 'http://127.0.0.1:5000/analyze_review';
+// Function to send review text to your Flask backend
+async function sendReviewToBackend(reviewText) {
+    // !! IMPORTANT: Replace this with YOUR ACTUAL PythonAnywhere URL !!
+    const backendUrl = 'https://shreyasb.pythonanywhere.com/analyze_review';
 
-// Thresholds for individual high probabilities that make a review FAKE for blocking
-const FAKE_PROB_ALONE_BLOCK_THRESHOLD = 0.75; // If fakeProbability is 75% or higher, it's FAKE
-const AI_PROB_ALONE_BLOCK_THRESHOLD = 0.75;   // If aiProbability is 75% or higher, it's FAKE
-
-// Threshold for combined probabilities that make a review FAKE for blocking
-const COMBINED_PROB_BLOCK_THRESHOLD = 0.50; // If BOTH fake AND AI are 50% or higher, it's FAKE
-
-// Threshold for simply displaying 'AI-WRITTEN' status (can be different from blocking threshold)
-const AI_DISPLAY_THRESHOLD = 0.60;
-
-let blockedReviewCount = 0; // Initialize counter for this page load
-
-// --- Site-Specific Selectors and Functions ---
-const siteConfigs = {
-    'amazon.com': {
-        reviewContainerSelector: '[data-hook="review"]', // The entire review block
-        reviewTextSelector: '.review-text-content span', // The actual review text element
-        // Elements to hide within the container when a review is blocked
-        elementsToHideSelectors: ['.review-text-content', '.a-section.review-header', '.review-data', '.review-time'],
-        // Function to get the review container for a given text element
-        getReviewContainer: (reviewTextElement) => {
-            let currentElement = reviewTextElement;
-            while (currentElement && currentElement !== document.body) {
-                if (currentElement.matches('[data-hook="review"]') || currentElement.classList.contains('review')) {
-                    return currentElement;
-                }
-                currentElement = currentElement.parentElement;
-            }
-            return null;
-        }
-    }
-};
-
-function getCurrentSiteConfig() {
-    const hostname = window.location.hostname;
-    if (hostname.includes('amazon.com')) {
-        return siteConfigs['amazon.com'];
-    }
-    return null; // Not on a supported site
-}
-
-// --- Main Processing Logic ---
-async function processAndFilterReviews(filterEnabled) {
-    const config = getCurrentSiteConfig();
-    if (!config) {
-        console.log("Not on a supported Amazon page. Skipping review processing.");
-        blockedReviewCount = 0;
-        chrome.runtime.sendMessage({ action: "updateBlockedCount", count: blockedReviewCount });
-        return;
-    }
-
-    const warningDiv = document.getElementById('temu-model-warning');
-    if (warningDiv) warningDiv.style.display = 'none'; 
-
-
-    console.log("Processing and filtering reviews. Filter enabled:", filterEnabled, "Site:", window.location.hostname);
-    blockedReviewCount = 0; // Reset counter for a new analysis run
-    const reviewTextElements = document.querySelectorAll(config.reviewTextSelector);
-    const processedReviewIds = new Set(); 
-
-    // Step 1: Manage visibility and messages for ALL reviews based on current filter state
-    document.querySelectorAll(config.reviewContainerSelector).forEach(reviewContainer => {
-        let blockedMessageDiv = reviewContainer.querySelector('.fake-review-blocked-message');
-        if (!blockedMessageDiv) {
-            blockedMessageDiv = document.createElement('div');
-            blockedMessageDiv.classList.add('fake-review-blocked-message');
-            blockedMessageDiv.style.cssText = `
-                color: #C45500; font-weight: bold; padding: 10px;
-                background-color: #FFF8E1; border: 1px solid #FFD180;
-                border-radius: 5px; margin-top: 10px; text-align: center;
-            `;
-            blockedMessageDiv.textContent = 'FAKE REVIEW BLOCKED';
-            reviewContainer.prepend(blockedMessageDiv); 
-            blockedMessageDiv.style.display = 'none'; // Hidden by default
-        }
-
-        const isCurrentlyFake = reviewContainer.classList.contains('fake-review-detected');
-
-        if (isCurrentlyFake && filterEnabled) {
-            // If detected as fake and filter is ON, hide content, show message
-            config.elementsToHideSelectors.forEach(selector => {
-                reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = 'none');
-            });
-            blockedMessageDiv.style.display = ''; // Show message
-            blockedReviewCount++; // Increment count only if actually hiding
-        } else {
-            // If not fake, or filter is OFF, show content, hide message
-            config.elementsToHideSelectors.forEach(selector => {
-                reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = '');
-            });
-            blockedMessageDiv.style.display = 'none'; // Hide message
-        }
-    });
-
-    // Step 2: Analyze new reviews or re-analyze if necessary
-    for (const el of reviewTextElements) {
-        const reviewText = el.innerText.trim();
-        const reviewContainer = config.getReviewContainer(el);
-
-        if (!reviewText || !reviewContainer) {
-            continue;
-        }
-
-        const reviewId = reviewContainer.id || Array.from(reviewContainer.classList).join(' ') + reviewText.substring(0, Math.min(reviewText.length, 50)); 
-        if (processedReviewIds.has(reviewId)) {
-            continue; // Skip if already processed in this run
-        }
-        processedReviewIds.add(reviewId);
-
-        // Skip ML analysis if already detected and marked from a previous run
-        if (reviewContainer.classList.contains('review-processed-by-ml')) {
-             continue;
-        }
-        
-        try {
-            const response = await fetch(FLASK_ENDPOINT, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ reviewText: reviewText })
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
-            console.log("Analysis result for review (first 50 chars):", reviewText.substring(0,50), "...", data);
-
-            // NEW COMPLEX LOGIC: Determine if the review is FAKE for blocking
-            const isReviewFake = (data.fakeProbability >= FAKE_PROB_ALONE_BLOCK_THRESHOLD) || // Case 1: Fake prob alone is high
-                                 (data.aiProbability >= AI_PROB_ALONE_BLOCK_THRESHOLD) ||     // Case 2: AI prob alone is high
-                                 (data.fakeProbability >= COMBINED_PROB_BLOCK_THRESHOLD &&    // Case 3: Both are above 50%
-                                  data.aiProbability >= COMBINED_PROB_BLOCK_THRESHOLD);
-            
-            // Determine if the review is AI-written for DISPLAY purposes (uses its own threshold)
-            const isReviewAIWritten = data.aiProbability >= AI_DISPLAY_THRESHOLD;
-
-            // Mark review container as processed by the ML model
-            reviewContainer.classList.add('review-processed-by-ml');
-
-            let statusIndicator = reviewContainer.querySelector('.review-filter-status');
-            if (!statusIndicator) {
-                statusIndicator = document.createElement('div');
-                statusIndicator.classList.add('review-filter-status');
-                statusIndicator.style.cssText = `
-                    font-size: 0.8em; font-weight: bold; margin-top: 5px;
-                    padding: 3px 0; text-align: right;
-                `;
-                
-                const starRatingElement = reviewContainer.querySelector('[data-hook="review-star-rating"]');
-                const reviewHeaderElement = reviewContainer.querySelector('.a-section.review-header');
-
-                if (starRatingElement) {
-                    starRatingElement.after(statusIndicator);
-                } else if (reviewHeaderElement) {
-                    reviewHeaderElement.after(statusIndicator);
-                } else {
-                    reviewContainer.appendChild(statusIndicator); 
-                }
-            }
-
-            // Update status indicator text to show both Fake/Real and AI/Human
-            let statusText = `Status: ${isReviewFake ? 'FAKE' : 'REAL'} (Prob: ${(data.fakeProbability * 100).toFixed(2)}%)`;
-            statusText += `<br>AI Status: ${isReviewAIWritten ? 'AI-WRITTEN' : 'HUMAN-WRITTEN'} (Prob: ${(data.aiProbability * 100).toFixed(2)}%)`;
-            
-            statusIndicator.innerHTML = statusText; // Use innerHTML to allow <br> tag
-            
-            // Set color based on overall classification
-            if (isReviewFake) {
-                statusIndicator.style.color = 'red'; // Red for any review classified as FAKE
-            } else if (isReviewAIWritten) {
-                statusIndicator.style.color = 'orange'; // Orange if just AI-written (but not FAKE by blocking rules)
-            } else {
-                statusIndicator.style.color = 'green'; // Green for REAL and HUMAN-WRITTEN
-            }
-            
-
-            // Now, apply visibility/hiding based on 'isReviewFake' AND filter state
-            let blockedMessageDiv = reviewContainer.querySelector('.fake-review-blocked-message');
-
-            if (isReviewFake) { // This part blocks based on the new combined 'isReviewFake'
-                reviewContainer.classList.add('fake-review-detected'); // Mark it as detected fake
-                if (filterEnabled) {
-                    config.elementsToHideSelectors.forEach(selector => {
-                        reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = 'none');
-                    });
-                    if (blockedMessageDiv) blockedMessageDiv.style.display = '';
-                    blockedReviewCount++; // Increment if actually hiding
-                } else {
-                    // Not hiding, but mark as detected
-                    config.elementsToHideSelectors.forEach(selector => {
-                        reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = '');
-                    });
-                    if (blockedMessageDiv) blockedMessageDiv.style.display = 'none';
-                }
-            } else { // If not fake according to the combined threshold
-                reviewContainer.classList.remove('fake-review-detected');
-                config.elementsToHideSelectors.forEach(selector => {
-                    reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = '');
-                });
-                if (blockedMessageDiv) blockedMessageDiv.style.display = 'none';
-            }
-
-        } catch (error) {
-            console.error("Error sending review to Flask or processing (first 50 chars):", reviewText.substring(0,50), "...", error);
-            const errorIndicator = reviewContainer.querySelector('.review-filter-status');
-            if (errorIndicator) {
-                errorIndicator.textContent = `Error: ${error.message}`;
-                errorIndicator.style.color = 'orange';
-            }
-            // Ensure visibility if there was an error processing or if not fake
-            reviewContainer.classList.remove('fake-review-detected');
-            config.elementsToHideSelectors.forEach(selector => {
-                reviewContainer.querySelectorAll(selector).forEach(el => el.style.display = '');
-            });
-            let blockedMessageDiv = reviewContainer.querySelector('.fake-review-blocked-message');
-            if (blockedMessageDiv) blockedMessageDiv.style.display = 'none';
-        }
-    }
-    // After processing all reviews, send the count to the popup
-    chrome.runtime.sendMessage({ action: "updateBlockedCount", count: blockedReviewCount });
-}
-
-// Initial call to get filter state from background script and then process reviews
-chrome.runtime.sendMessage({ action: "getFilterState" }, (response) => {
-    console.log("Received initial filter state from background:", response.enabled);
-    processAndFilterReviews(response.enabled);
-});
-
-// Also, listen for messages from popup (like "re-analyze") to trigger processing
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "reAnalyzeReviews") {
-        console.log("Re-analyzing reviews due to popup message...");
-        blockedReviewCount = 0; // Reset count on re-analyze
-
-        // Clear existing status indicators and processed flags for a full refresh
-        document.querySelectorAll('.review-filter-status').forEach(el => el.remove());
-        document.querySelectorAll('.review-processed-by-ml').forEach(el => el.classList.remove('review-processed-by-ml'));
-        document.querySelectorAll('.fake-review-detected').forEach(el => el.classList.remove('fake-review-detected')); 
-        document.querySelectorAll('.fake-review-blocked-message').forEach(el => el.style.display = 'none'); // Hide messages
-
-        // Re-run the analysis
-        chrome.runtime.sendMessage({ action: "getFilterState" }, (response) => {
-            processAndFilterReviews(response.enabled);
-            sendResponse({ success: true }); // Acknowledge message for popup.js
+    try {
+        const response = await fetch(backendUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ reviewText: reviewText })
         });
-        return true; // Indicates asynchronous response
+
+        // Check if the request was successful
+        if (!response.ok) {
+            // Attempt to parse error message from backend if available
+            const errorData = await response.json().catch(() => ({ error: 'Unknown server error' }));
+            throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorData.error || response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data; // This should contain { fakeProbability: X, aiProbability: Y }
+    } catch (error) {
+        console.error("Error sending review to backend:", error);
+        // Depending on your UI, you might want to display an error message to the user
+        return null; // Return null or throw error to indicate failure
     }
-});
+}
+
+// Function to find the review element on the page and extract text
+function extractReviewText() {
+    // This is a placeholder. You need to adjust this selector
+    // to target the specific HTML element containing the review text on the website
+    // you are trying to analyze (e.g., Amazon, Yelp, etc.).
+    // Use your browser's developer tools (Inspect Element) to find the correct CSS selector.
+    const reviewElement = document.querySelector('YOUR_REVIEW_CSS_SELECTOR_HERE'); // <<< CHANGE THIS
+    if (reviewElement) {
+        return reviewElement.innerText.trim();
+    }
+    return null;
+}
+
+// Function to update the UI with the probabilities
+function updateUIWithProbabilities(probabilities) {
+    if (probabilities && typeof probabilities.fakeProbability === 'number' && typeof probabilities.aiProbability === 'number') {
+        const fakeProb = (probabilities.fakeProbability * 100).toFixed(2);
+        const aiProb = (probabilities.aiProbability * 100).toFixed(2);
+
+        // This is a placeholder for where you want to display the results.
+        // You'll likely need to create or modify an existing element on the page.
+        let resultDisplayElement = document.querySelector('#review-blocker-results'); // Try to find existing
+        if (!resultDisplayElement) {
+            // If not found, create a new element (e.g., a div)
+            resultDisplayElement = document.createElement('div');
+            resultDisplayElement.id = 'review-blocker-results';
+            resultDisplayElement.style.marginTop = '10px';
+            resultDisplayElement.style.padding = '10px';
+            resultDisplayElement.style.border = '1px solid #ccc';
+            resultDisplayElement.style.backgroundColor = '#f9f9f9';
+            resultDisplayElement.style.borderRadius = '5px';
+            // Append it to a suitable parent element on the page
+            // For example, after the review element, or at the top of the body
+            const body = document.body; // Or document.querySelector('YOUR_TARGET_PARENT_ELEMENT')
+            if (body) {
+                body.prepend(resultDisplayElement); // Or append, or insert after reviewElement
+            }
+        }
+
+        resultDisplayElement.innerHTML = `
+            <h3>Review Analysis:</h3>
+            <p>Fake Probability: <strong>${fakeProb}%</strong></p>
+            <p>AI Probability: <strong>${aiProb}%</strong></p>
+            <p style="font-size: 0.9em; color: ${probabilities.fakeProbability > 0.5 ? 'red' : 'green'};">
+                ${probabilities.fakeProbability > 0.5 ? 'This review might be fake!' : 'This review seems genuine.'}
+            </p>
+        `;
+        console.log("UI updated with probabilities:", probabilities);
+
+    } else {
+        console.error("Invalid probabilities received:", probabilities);
+        // Optionally display an error in the UI
+    }
+}
+
+// Main execution logic
+async function runReviewAnalysis() {
+    const reviewText = extractReviewText();
+
+    if (reviewText && reviewText.length > 10) { // Basic check for sufficient text
+        console.log("Sending review text to backend:", reviewText);
+        const probabilities = await sendReviewToBackend(reviewText);
+        if (probabilities) {
+            updateUIWithProbabilities(probabilities);
+        } else {
+            console.warn("Could not get probabilities from backend.");
+            // Optionally update UI to show an error or a "failed" state
+        }
+    } else {
+        console.log("No review text found or too short to analyze.");
+        // Optionally clear previous results or show a message
+    }
+}
+
+// Decide when to run the analysis
+// You might want to run it:
+// 1. Immediately on page load (simple, but might miss dynamic content)
+// 2. After a short delay (to let dynamic content load)
+// 3. When a specific DOM element appears (more robust for SPAs)
+// 4. On a user action (e.g., clicking a button)
+
+// Option 1: Run on DOMContentLoaded (basic)
+document.addEventListener('DOMContentLoaded', runReviewAnalysis);
+
+// Option 2: Run after a delay (can help with some dynamic content)
+// window.addEventListener('load', () => setTimeout(runReviewAnalysis, 1500));
+
+// Option 3: Use a MutationObserver for more complex dynamic pages
+// (e.g., for single-page applications where reviews load after initial page load)
+// const observer = new MutationObserver((mutations, obs) => {
+//     // Check if the review element is now present
+//     if (document.querySelector('YOUR_REVIEW_CSS_SELECTOR_HERE')) { // <<< CHANGE THIS
+//         runReviewAnalysis();
+//         obs.disconnect(); // Stop observing once the review is found and processed
+//     }
+// });
+// observer.observe(document.body, { childList: true, subtree: true });
+
+// You could also add a message listener if your popup.js or background.js triggers the analysis
+// chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+//     if (message.action === "analyzeCurrentPage") {
+//         runReviewAnalysis();
+//         sendResponse({ status: "Analysis initiated" });
+//     }
+// });
