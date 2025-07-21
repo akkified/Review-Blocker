@@ -6,7 +6,7 @@ This is my **Chrome Extension** on blocking ***fake reviews*** on the internet. 
 **@Contributors**
 If you want to try out any of the features of the extension, please follow these steps:
 
-**1.** Download this folder  
+**1.** Download the extension_files folder  
 
 **2.** Go to chrome://extension  
 
@@ -18,9 +18,13 @@ If you want to try out any of the features of the extension, please follow these
 
 **6.** Pin the extension  
 
-**7.** Go to any of the authorized sites, such as Amazon, Walmart, Costco, Bestbuy, or Wish  
+**7.** Download the backend_files
 
-**8.** Click on the extension or use Ctrl/Cmd B  
+**8.** Run the app.py in any IDE of your choice with the .pkl files in the same folder
 
-**9.** Toggle the switch, and watch the injected CSS change the page  
+**9.** Go to any of the authorized sites, such as Amazon, Walmart, Costco, Bestbuy, or Wish(more sites will be compatible in the future)
+
+**10.** Click on the extension
+
+**11.** Toggle the switch, and watch the injected CSS change the page  
 
